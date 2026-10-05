@@ -1,0 +1,22 @@
+{
+  "name": "com.synthos.frame-debugger",
+  "displayName": "Synthos Frame Debugger Exporter",
+  "version": "1.0.0",
+  "type": "tool",
+  "unity": "2022.3",
+  "description": "Exports Unity Frame Debugger events, draw calls, shader properties, and batching breakdowns to JSON for interactive analysis in the Synthos Frame Debugger Web Viewer.",
+  "author": {
+    "name": "Synthos",
+    "url": "https://github.com/GRIMREAPER35487"
+  },
+  "keywords": [
+    "vrchat",
+    "frame-debugger",
+    "profiler",
+    "graphics",
+    "drawcalls",
+    "optimization",
+    "synthos"
+  ],
+  "dependencies": {}
+}
