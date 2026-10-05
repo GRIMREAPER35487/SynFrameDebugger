@@ -14,7 +14,6 @@ A powerful Unity Editor profiling tool that inspects and exports Unity Frame Deb
 You can launch the tool inside the Unity Editor via:
 - **Unity Top Menu:** `Window > Synthos > Syn Frame Exporter`
 - **Tools Menu:** `Tools > Synthos > Syn Frame Exporter`
-- **Synthos Scene Optimizer:** Click the **Open Frame Exporter** button in the top bar of the main Synthos Scene Optimizer window.
 
 ## Installation via VPM (VRChat Creator Companion / ALCOM)
 
