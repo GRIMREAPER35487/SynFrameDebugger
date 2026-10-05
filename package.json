@@ -1,10 +1,10 @@
 {
   "name": "com.synthos.frame-debugger",
   "displayName": "Synthos Frame Debugger Exporter",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "tool",
   "unity": "2022.3",
-  "description": "Exports Unity Frame Debugger events, draw calls, shader properties, and batching breakdowns to JSON for interactive analysis in the Synthos Frame Debugger Web Viewer.",
+  "description": "Exports Unity Frame Debugger events, draw calls, shader properties, and batching breakdowns to structured JSON for in-depth graphics profiling and diagnostics.",
   "author": {
     "name": "Synthos",
     "url": "https://github.com/GRIMREAPER35487"

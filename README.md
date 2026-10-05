@@ -7,7 +7,6 @@ A powerful Unity Editor profiling tool that inspects and exports Unity Frame Deb
 - **Deep Reflection Capture:** Accesses Unity's internal `FrameDebuggerUtility` and `FrameDebuggerEventData` to extract comprehensive draw call diagnostics that Unity normally does not expose to scripting.
 - **Batch Break Diagnostics:** Automatically records batch break causes (different shaders, material properties, lightmaps, multipass shaders, etc.) to help identify rendering bottlenecks.
 - **Shader & Material Analysis:** Captures per-draw call shaders, keywords, stencil states, blend modes, and vertex counts.
-- **Interactive Web Viewer Compatibility:** Generates structured JSON files ready for instant loading and inspection in the **Synthos Frame Debugger Viewer**.
 - **Asynchronous Safe Export:** Iterates frame event streams smoothly with an interactive progress bar and cancellation support.
 
 ## How to Open
