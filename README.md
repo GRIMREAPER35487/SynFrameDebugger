@@ -1,3 +1,9 @@
+<div align="center">
+  <img src="https://raw.githubusercontent.com/GRIMREAPER35487/SynFrameDebugger/main/.github/banner.png" alt="Synthos Frame Debugger Exporter" width="100%" />
+</div>
+
+<br/>
+
 # Synthos Frame Debugger Exporter
 
 A powerful Unity Editor profiling tool that inspects and exports Unity Frame Debugger event hierarchies, draw calls, shader parameters, render target bindings, and batch break causes into rich, structured JSON files for in-depth analysis.
