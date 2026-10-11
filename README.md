@@ -6,6 +6,11 @@
 
 # Synthos Frame Debugger Exporter
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/GRIMREAPER35487/SynFrameDebugger)](https://github.com/GRIMREAPER35487/SynFrameDebugger/releases/latest)
+[![GitHub Downloads (latest)](https://img.shields.io/github/downloads/GRIMREAPER35487/SynFrameDebugger/latest/total?label=downloads%40latest)](https://github.com/GRIMREAPER35487/SynFrameDebugger/releases/latest)
+[![GitHub Downloads (total)](https://img.shields.io/github/downloads/GRIMREAPER35487/SynFrameDebugger/total?label=downloads%40total)](https://github.com/GRIMREAPER35487/SynFrameDebugger/releases)
+
 A powerful Unity Editor profiling tool that inspects and exports Unity Frame Debugger event hierarchies, draw calls, shader parameters, render target bindings, and batch break causes into rich, structured JSON files for in-depth analysis.
 
 ## Features
