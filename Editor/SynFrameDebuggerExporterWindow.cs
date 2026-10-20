@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -20,6 +21,7 @@ namespace Synthos.SynSceneOptimizer
             public string shaderName = "";
             public string materialName = "";
             public int vertexCount = 0;
+            public bool isGroup; // Header/group tree row with no frame event of its own
             public string batchBreakCause = "None";
             public Dictionary<string, string> eventFields = new Dictionary<string, string>();
             public Dictionary<string, string> eventDataFields = new Dictionary<string, string>();
@@ -58,6 +60,7 @@ namespace Synthos.SynSceneOptimizer
         private object frameDebuggerWindowInstance = null;
         private MethodInfo changeLimitMethodInfo = null;
         private int asyncFrameWaitCount = 0;
+        private bool asyncLimitSetManually = false;
 
         [MenuItem("Window/Synthos/Syn Frame Exporter", priority = 30)]
         [MenuItem("Tools/Synthos/Syn Frame Exporter", priority = 30)]
@@ -71,6 +74,34 @@ namespace Synthos.SynSceneOptimizer
         private void OnEnable()
         {
             isReflectionResolved = ResolveReflection();
+        }
+
+        private void OnDisable()
+        {
+            // Also runs before a domain reload, so the limit is never left lowered
+            if (isCapturingAsync)
+            {
+                StopAsyncCapture();
+                Debug.LogWarning("[SYN FRAME EXPORTER] Capture aborted because the window was closed or scripts reloaded.");
+            }
+        }
+
+        private void StopAsyncCapture()
+        {
+            isCapturingAsync = false;
+            EditorApplication.update -= UpdateAsyncCapture;
+
+            try
+            {
+                if (limitProp != null)
+                {
+                    limitProp.SetValue(null, originalLimit);
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SYN FRAME EXPORTER] Failed to restore frame debugger limit: {e.Message}");
+            }
         }
 
         private bool ResolveReflection()
@@ -121,7 +152,15 @@ namespace Synthos.SynSceneOptimizer
                 var getBatchBreakCauseStringsMethod = frameDebuggerUtilityType.GetMethod("GetBatchBreakCauseStrings", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
                 if (getBatchBreakCauseStringsMethod != null)
                 {
-                    batchBreakCauses = (string[])getBatchBreakCauseStringsMethod.Invoke(null, null);
+                    try
+                    {
+                        batchBreakCauses = getBatchBreakCauseStringsMethod.Invoke(null, null) as string[];
+                    }
+                    catch (Exception e)
+                    {
+                        batchBreakCauses = null;
+                        Debug.LogWarning($"[SYN FRAME EXPORTER] Failed to read batch break cause strings (optional): {e.Message}");
+                    }
                 }
 
                 reflectionStatus = "Successfully resolved reflection APIs";
@@ -143,19 +182,53 @@ namespace Synthos.SynSceneOptimizer
         private void SetDebuggerEnabled(bool enabled)
         {
             if (!isReflectionResolved) return;
-            var setEnabledMethod = frameDebuggerUtilityType.GetMethod("SetEnabled", BindingFlags.Public | BindingFlags.Static);
-            if (setEnabledMethod != null)
+            try
             {
-                setEnabledMethod.Invoke(null, new object[] { enabled, 0 });
+                var setEnabledMethod = frameDebuggerUtilityType.GetMethod("SetEnabled", BindingFlags.Public | BindingFlags.Static);
+                if (setEnabledMethod != null)
+                {
+                    // Unity's own FrameDebuggerWindow passes the connected profiler id
+                    setEnabledMethod.Invoke(null, new object[] { enabled, UnityEditorInternal.ProfilerDriver.connectedProfiler });
+                }
+                else
+                {
+                    var p = frameDebuggerUtilityType.GetProperty("enabled", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                    if (p != null && p.CanWrite)
+                    {
+                        p.SetValue(null, enabled);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SYN FRAME EXPORTER] Failed to set Frame Debugger enabled={enabled}: {e.Message}");
+            }
+        }
+
+        private static EditorWindow FindOrOpenFrameDebuggerWindow(Type windowType)
+        {
+            // Reuse an already-open window without stealing focus; only open one if none exists
+            var existing = Resources.FindObjectsOfTypeAll(windowType);
+            if (existing != null && existing.Length > 0 && existing[0] != null)
+            {
+                return (EditorWindow)existing[0];
+            }
+            return GetWindow(windowType, false, "Frame Debugger", true);
+        }
+
+        private void RepaintForCapture()
+        {
+            // ChangeFrameEventLimit repaints the game/scene views itself; setting the limit directly does not
+            var fdWindow = frameDebuggerWindowInstance as EditorWindow;
+            if (fdWindow != null && !asyncLimitSetManually)
+            {
+                fdWindow.Repaint();
             }
             else
             {
-                var p = frameDebuggerUtilityType.GetProperty("enabled", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                if (p != null && p.CanWrite)
-                {
-                    p.SetValue(null, enabled);
-                }
+                UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
             }
+            Repaint();
         }
 
         private int GetEventCount()
@@ -194,12 +267,7 @@ namespace Synthos.SynSceneOptimizer
                 GUILayout.FlexibleSpace();
                 if (GUILayout.Button("Cancel Capture", GUILayout.Width(150), GUILayout.Height(25)))
                 {
-                    isCapturingAsync = false;
-                    EditorApplication.update -= UpdateAsyncCapture;
-                    if (limitProp != null)
-                    {
-                        limitProp.SetValue(null, originalLimit);
-                    }
+                    StopAsyncCapture();
                     Debug.LogWarning("[SYN FRAME EXPORTER] Capture canceled by user.");
                 }
                 GUILayout.FlexibleSpace();
@@ -432,7 +500,7 @@ namespace Synthos.SynSceneOptimizer
                 GUILayout.Label(evt.index.ToString(), rowStyle, GUILayout.Width(35));
 
                 // Indented Name
-                string indentSpace = new string(' ', evt.level * 4);
+                string indentSpace = new string(' ', Mathf.Max(0, evt.level) * 4);
                 string displayName = indentSpace + evt.name;
                 
                 if (GUILayout.Button(displayName, rowStyle, GUILayout.ExpandWidth(true)))
@@ -577,6 +645,9 @@ namespace Synthos.SynSceneOptimizer
 
             if (!treeViewSuccess)
             {
+                // Discard any partial rows added before the tree view capture failed
+                tempEvents.Clear();
+
                 // Fallback to flat list query
                 try
                 {
@@ -677,8 +748,11 @@ namespace Synthos.SynSceneOptimizer
         private void StartAsyncCapture(List<CapturedEvent> events)
         {
             if (events == null || events.Count == 0) return;
+            if (isCapturingAsync) return;
 
             isCapturingAsync = true;
+            asyncFrameWaitCount = 0;
+            asyncLimitSetManually = false;
             asyncCurrentIndex = 0;
             asyncTotalEvents = events.Count;
             asyncCapturedEvents = events;
@@ -693,10 +767,9 @@ namespace Synthos.SynSceneOptimizer
                 Type windowType = assembly.GetType("UnityEditor.FrameDebuggerWindow");
                 if (windowType != null)
                 {
-                    frameDebuggerWindowInstance = GetWindow(windowType, false, "Frame Debugger", true);
+                    frameDebuggerWindowInstance = FindOrOpenFrameDebuggerWindow(windowType);
                     if (frameDebuggerWindowInstance != null)
                     {
-                        ((EditorWindow)frameDebuggerWindowInstance).Focus();
                         changeLimitMethodInfo = windowType.GetMethod("ChangeFrameEventLimit", BindingFlags.NonPublic | BindingFlags.Instance, null, new Type[] { typeof(int) }, null);
                     }
                 }
@@ -706,6 +779,7 @@ namespace Synthos.SynSceneOptimizer
                 Debug.LogWarning($"[SYN FRAME EXPORTER] Failed to resolve FrameDebuggerWindow reflection: {ex.Message}");
             }
 
+            EditorApplication.update -= UpdateAsyncCapture;
             EditorApplication.update += UpdateAsyncCapture;
         }
 
@@ -713,46 +787,63 @@ namespace Synthos.SynSceneOptimizer
         {
             if (!isCapturingAsync) return;
 
+            try
+            {
+                UpdateAsyncCaptureStep();
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SYN FRAME EXPORTER] Async capture failed and was stopped: {e.Message}\n{e.StackTrace}");
+                StopAsyncCapture();
+                Repaint();
+            }
+        }
+
+        private void UpdateAsyncCaptureStep()
+        {
             // Wait 3 frames after setting the limit in the previous step to let the GPU render
             if (asyncCurrentIndex > 0)
             {
-                if (asyncFrameWaitCount < 3)
-                {
-                    asyncFrameWaitCount++;
-                    UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
-                    return; // Wait for next frame
-                }
-
-                // 3 frames have passed, extract details
                 int prevIndex = asyncCurrentIndex - 1;
                 var cap = asyncCapturedEvents[prevIndex];
-                ExtractEventData(cap.index, cap);
+
+                // Group/header rows have no event data of their own
+                if (!cap.isGroup)
+                {
+                    if (asyncFrameWaitCount < 3)
+                    {
+                        asyncFrameWaitCount++;
+                        RepaintForCapture();
+                        return; // Wait for next frame
+                    }
+
+                    // 3 frames have passed, extract details
+                    ExtractEventData(cap.index, cap);
+                }
             }
 
             if (asyncCurrentIndex >= asyncTotalEvents)
             {
-                // Finished!
-                isCapturingAsync = false;
-                EditorApplication.update -= UpdateAsyncCapture;
-
-                // Restore original limit
-                if (limitProp != null)
-                {
-                    limitProp.SetValue(null, originalLimit);
-                }
-
-                // Copy to main list
+                // Finished! Copy to main list first so a limit restore failure can't lose the data
                 capturedEvents = new List<CapturedEvent>(asyncCapturedEvents);
 
-                // Focus the exporter window again
-                var exporterWindow = GetWindow<SynFrameDebuggerExporterWindow>("Syn Frame Exporter", true);
-                if (exporterWindow != null)
-                {
-                    exporterWindow.Focus();
-                }
+                // Stop capture and restore original limit
+                StopAsyncCapture();
+
+                // Bring the exporter window back to the front (without reopening it if closed)
+                Focus();
+                Repaint();
 
                 Debug.Log($"[SYN FRAME EXPORTER] Asynchronously captured {capturedEvents.Count} graphics events successfully.");
                 EditorUtility.DisplayDialog("Capture Complete", $"Successfully captured {capturedEvents.Count} events with full GameObject details!", "OK");
+                return;
+            }
+
+            // Group rows share an index with a real event; just advance past them
+            if (asyncCapturedEvents[asyncCurrentIndex].isGroup)
+            {
+                asyncCurrentIndex++;
+                asyncFrameWaitCount = 0;
                 return;
             }
 
@@ -784,9 +875,10 @@ namespace Synthos.SynSceneOptimizer
                 }
                 limitProp.SetValue(null, targetIndex);
             }
+            asyncLimitSetManually = !limitSet;
 
             // Force repaint to process the change
-            UnityEditorInternal.InternalEditorUtility.RepaintAllViews();
+            RepaintForCapture();
 
             asyncCurrentIndex++;
             asyncFrameWaitCount = 0;
@@ -794,6 +886,8 @@ namespace Synthos.SynSceneOptimizer
 
         private bool TryCaptureFromTreeView(List<CapturedEvent> eventsList)
         {
+            // Restores the user's tree expansion state; assigned once the reflection methods are resolved
+            Action restoreExpansion = null;
             try
             {
                 var assembly = typeof(EditorWindow).Assembly;
@@ -804,15 +898,13 @@ namespace Synthos.SynSceneOptimizer
                     return false;
                 }
 
-                // Find or open the window and focus it
-                var window = GetWindow(windowType, false, "Frame Debugger", true);
+                // Find the open window (without stealing focus) or open it if needed
+                var window = FindOrOpenFrameDebuggerWindow(windowType);
                 if (window == null)
                 {
                     Debug.LogWarning("[SYN FRAME EXPORTER] FrameDebuggerWindow instance could not be retrieved");
                     return false;
                 }
-
-                window.Focus();
 
                 window.Repaint();
 
@@ -877,6 +969,27 @@ namespace Synthos.SynSceneOptimizer
                     return false;
                 }
 
+                // Remember which rows we expand so the user's expansion state can be restored afterwards
+                var expandedByUs = new List<int>();
+                restoreExpansion = () =>
+                {
+                    try
+                    {
+                        for (int k = expandedByUs.Count - 1; k >= 0; k--)
+                        {
+                            setExpandedMethod.Invoke(dataSourceObj, new object[] { expandedByUs[k], false });
+                        }
+                        expandedByUs.Clear();
+
+                        reloadDataMethod.Invoke(dataSourceObj, null);
+                        reloadTreeViewMethod.Invoke(innerTreeViewObj != null ? innerTreeViewObj : treeViewObj, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogWarning($"[SYN FRAME EXPORTER] Failed to restore Frame Debugger tree expansion state: {ex.Message}");
+                    }
+                };
+
                 // Loop iteratively to recursively expand lazy-loaded tree view nodes
                 bool expandedAny;
                 int safetyCounter = 0;
@@ -912,6 +1025,7 @@ namespace Synthos.SynSceneOptimizer
                         if (hasChildren && !isExpanded)
                         {
                             setExpandedMethod.Invoke(dataSourceObj, new object[] { id, true });
+                            expandedByUs.Add(id);
                             expandedAny = true;
                         }
                     }
@@ -919,6 +1033,11 @@ namespace Synthos.SynSceneOptimizer
                     safetyCounter++;
                     Debug.Log($"[SYN FRAME EXPORTER] Expansion pass {safetyCounter}. ExpandedAny: {expandedAny}");
                 } while (expandedAny && safetyCounter < 15);
+
+                if (expandedAny)
+                {
+                    Debug.LogWarning("[SYN FRAME EXPORTER] Tree expansion hit the safety limit; the captured event tree may be incomplete.");
+                }
 
                 // Final sync to make sure all newly generated rows are loaded
                 reloadDataMethod.Invoke(dataSourceObj, null);
@@ -940,6 +1059,7 @@ namespace Synthos.SynSceneOptimizer
 
                 Debug.Log($"[SYN FRAME EXPORTER] GetRows returned {rows.Count} rows after iterative expansion");
 
+                bool warnedMissingEventIndex = false;
                 for (int i = 0; i < rows.Count; i++)
                 {
                     object row = rows[i];
@@ -955,6 +1075,11 @@ namespace Synthos.SynSceneOptimizer
                     {
                         eventIndex = (int)eventIndexField.GetValue(row);
                     }
+                    else if (!warnedMissingEventIndex)
+                    {
+                        warnedMissingEventIndex = true;
+                        Debug.LogWarning("[SYN FRAME EXPORTER] Field m_EventIndex not found on tree row; event indices will default to 0.");
+                    }
 
                     var cap = new CapturedEvent
                     {
@@ -963,9 +1088,14 @@ namespace Synthos.SynSceneOptimizer
                         level = depth
                     };
 
+                    // Rows with children are group/header rows (e.g. "Opaque"); m_FrameEvent is a struct so it is
+                    // never null, but these rows share an index with a real event and must not be extracted twice
+                    PropertyInfo hasChildrenProp = row.GetType().GetProperty("hasChildren", BindingFlags.Public | BindingFlags.Instance);
+                    cap.isGroup = hasChildrenProp != null && (bool)hasChildrenProp.GetValue(row);
+
                     // Extract native event details
                     FieldInfo frameEventField = row.GetType().GetField("m_FrameEvent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                    if (frameEventField != null)
+                    if (frameEventField != null && !cap.isGroup)
                     {
                         object frameEvent = frameEventField.GetValue(row);
                         if (frameEvent != null)
@@ -998,6 +1128,10 @@ namespace Synthos.SynSceneOptimizer
                 Debug.LogWarning($"[SYN FRAME EXPORTER] TreeView capture failed. Details: {e.Message}\n{e.StackTrace}");
                 return false;
             }
+            finally
+            {
+                if (restoreExpansion != null) restoreExpansion();
+            }
         }
 
         private void ExtractEventData(int eventIndex, CapturedEvent cap)
@@ -1009,25 +1143,33 @@ namespace Synthos.SynSceneOptimizer
                 // Query the window's details view cache (m_EventDetailsView.m_CurEventData.Value)
                 if (frameDebuggerWindowInstance != null)
                 {
-                    var assembly = typeof(EditorWindow).Assembly;
-                    Type windowType = assembly.GetType("UnityEditor.FrameDebuggerWindow");
-                    
-                    FieldInfo detailsViewField = windowType.GetField("m_EventDetailsView", BindingFlags.NonPublic | BindingFlags.Instance);
-                    object detailsViewObj = detailsViewField != null ? detailsViewField.GetValue(frameDebuggerWindowInstance) : null;
-                    
-                    if (detailsViewObj != null)
+                    try
                     {
-                        FieldInfo curEventDataField = detailsViewObj.GetType().GetField("m_CurEventData", BindingFlags.NonPublic | BindingFlags.Instance);
-                        object lazyObj = curEventDataField != null ? curEventDataField.GetValue(detailsViewObj) : null;
-                        
-                        if (lazyObj != null)
+                        var assembly = typeof(EditorWindow).Assembly;
+                        Type windowType = assembly.GetType("UnityEditor.FrameDebuggerWindow");
+
+                        FieldInfo detailsViewField = windowType != null ? windowType.GetField("m_EventDetailsView", BindingFlags.NonPublic | BindingFlags.Instance) : null;
+                        object detailsViewObj = detailsViewField != null ? detailsViewField.GetValue(frameDebuggerWindowInstance) : null;
+
+                        if (detailsViewObj != null)
                         {
-                            PropertyInfo valueProp = lazyObj.GetType().GetProperty("Value");
-                            if (valueProp != null)
+                            FieldInfo curEventDataField = detailsViewObj.GetType().GetField("m_CurEventData", BindingFlags.NonPublic | BindingFlags.Instance);
+                            object lazyObj = curEventDataField != null ? curEventDataField.GetValue(detailsViewObj) : null;
+
+                            if (lazyObj != null)
                             {
-                                eventDataObj = valueProp.GetValue(lazyObj);
+                                PropertyInfo valueProp = lazyObj.GetType().GetProperty("Value");
+                                if (valueProp != null)
+                                {
+                                    eventDataObj = valueProp.GetValue(lazyObj);
+                                }
                             }
                         }
+                    }
+                    catch (Exception ex)
+                    {
+                        eventDataObj = null;
+                        Debug.LogWarning($"[SYN FRAME EXPORTER] Failed to read event details cache for index {eventIndex}, using fallback: {ex.Message}");
                     }
                 }
 
@@ -1056,6 +1198,8 @@ namespace Synthos.SynSceneOptimizer
                 {
                     FieldInfo[] dataFields = eventDataObj.GetType().GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                     foreach (var df in dataFields)
+                    {
+                        try
                         {
                             object val = df.GetValue(eventDataObj);
                             string valStr = GetValueString(val);
@@ -1144,8 +1288,13 @@ namespace Synthos.SynSceneOptimizer
                                 ExtractShaderInfo(val, cap);
                             }
                         }
+                        catch (Exception fieldEx)
+                        {
+                            Debug.LogWarning($"[SYN FRAME EXPORTER] Skipped field '{df.Name}' for event {eventIndex}: {fieldEx.Message}");
+                        }
                     }
                 }
+            }
             catch (Exception ex)
             {
                 Debug.LogError($"[SYN FRAME EXPORTER] Error extracting event data for index {eventIndex}: {ex.Message}\n{ex.StackTrace}");
@@ -1156,88 +1305,144 @@ namespace Synthos.SynSceneOptimizer
         {
             if (shaderInfo == null) return;
 
-            try
-            {
-                FieldInfo keywordsField = shaderInfo.GetType().GetField("m_Keywords", BindingFlags.Public | BindingFlags.Instance);
-                FieldInfo floatsField = shaderInfo.GetType().GetField("m_Floats", BindingFlags.Public | BindingFlags.Instance);
-                FieldInfo intsField = shaderInfo.GetType().GetField("m_Ints", BindingFlags.Public | BindingFlags.Instance);
-                FieldInfo vectorsField = shaderInfo.GetType().GetField("m_Vectors", BindingFlags.Public | BindingFlags.Instance);
-                FieldInfo texturesField = shaderInfo.GetType().GetField("m_Textures", BindingFlags.Public | BindingFlags.Instance);
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance;
+            Type infoType = shaderInfo.GetType();
 
-                if (keywordsField != null)
+            FieldInfo keywordsField = infoType.GetField("m_Keywords", flags);
+            FieldInfo floatsField = infoType.GetField("m_Floats", flags);
+            FieldInfo intsField = infoType.GetField("m_Ints", flags);
+            FieldInfo vectorsField = infoType.GetField("m_Vectors", flags);
+            FieldInfo texturesField = infoType.GetField("m_Textures", flags);
+
+            if (keywordsField != null)
+            {
+                try
                 {
-                    Array keywords = (Array)keywordsField.GetValue(shaderInfo);
+                    Array keywords = keywordsField.GetValue(shaderInfo) as Array;
                     if (keywords != null && keywords.Length > 0)
                     {
                         var kwList = new List<string>();
                         foreach (var kw in keywords)
                         {
-                            string kwName = (string)kw.GetType().GetField("m_Name", BindingFlags.Public | BindingFlags.Instance).GetValue(kw);
-                            kwList.Add(kwName);
+                            if (kw == null) continue;
+                            FieldInfo nameField = kw.GetType().GetField("m_Name", flags);
+                            if (nameField == null) continue;
+                            string kwName = nameField.GetValue(kw) as string;
+                            if (kwName != null) kwList.Add(kwName);
                         }
                         cap.eventDataFields["ShaderKeywordsList"] = string.Join(" ", kwList);
                     }
                 }
-
-                if (floatsField != null)
+                catch (Exception e)
                 {
-                    Array floats = (Array)floatsField.GetValue(shaderInfo);
+                    Debug.LogWarning("[SYN FRAME EXPORTER] Failed to extract shader keywords: " + e.Message);
+                }
+            }
+
+            if (floatsField != null)
+            {
+                try
+                {
+                    Array floats = floatsField.GetValue(shaderInfo) as Array;
                     if (floats != null)
                     {
                         foreach (var fl in floats)
                         {
-                            string name = (string)fl.GetType().GetField("m_Name", BindingFlags.Public | BindingFlags.Instance).GetValue(fl);
-                            float value = (float)fl.GetType().GetField("m_Value", BindingFlags.Public | BindingFlags.Instance).GetValue(fl);
-                            cap.eventDataFields[$"ShaderFloat_{name}"] = value.ToString();
+                            if (fl == null) continue;
+                            FieldInfo nameField = fl.GetType().GetField("m_Name", flags);
+                            FieldInfo valueField = fl.GetType().GetField("m_Value", flags);
+                            if (nameField == null || valueField == null) continue;
+                            string name = nameField.GetValue(fl) as string;
+                            object rawValue = valueField.GetValue(fl);
+                            if (name == null || rawValue == null) continue;
+                            float value = Convert.ToSingle(rawValue, CultureInfo.InvariantCulture);
+                            cap.eventDataFields[$"ShaderFloat_{name}"] = value.ToString(CultureInfo.InvariantCulture);
                         }
                     }
                 }
-
-                if (intsField != null)
+                catch (Exception e)
                 {
-                    Array ints = (Array)intsField.GetValue(shaderInfo);
+                    Debug.LogWarning("[SYN FRAME EXPORTER] Failed to extract shader floats: " + e.Message);
+                }
+            }
+
+            if (intsField != null)
+            {
+                try
+                {
+                    Array ints = intsField.GetValue(shaderInfo) as Array;
                     if (ints != null)
                     {
                         foreach (var it in ints)
                         {
-                            string name = (string)it.GetType().GetField("m_Name", BindingFlags.Public | BindingFlags.Instance).GetValue(it);
-                            int value = (int)it.GetType().GetField("m_Value", BindingFlags.Public | BindingFlags.Instance).GetValue(it);
-                            cap.eventDataFields[$"ShaderInt_{name}"] = value.ToString();
+                            if (it == null) continue;
+                            FieldInfo nameField = it.GetType().GetField("m_Name", flags);
+                            FieldInfo valueField = it.GetType().GetField("m_Value", flags);
+                            if (nameField == null || valueField == null) continue;
+                            string name = nameField.GetValue(it) as string;
+                            object rawValue = valueField.GetValue(it);
+                            if (name == null || rawValue == null) continue;
+                            int value = Convert.ToInt32(rawValue, CultureInfo.InvariantCulture);
+                            cap.eventDataFields[$"ShaderInt_{name}"] = value.ToString(CultureInfo.InvariantCulture);
                         }
                     }
                 }
-
-                if (vectorsField != null)
+                catch (Exception e)
                 {
-                    Array vectors = (Array)vectorsField.GetValue(shaderInfo);
+                    Debug.LogWarning("[SYN FRAME EXPORTER] Failed to extract shader ints: " + e.Message);
+                }
+            }
+
+            if (vectorsField != null)
+            {
+                try
+                {
+                    Array vectors = vectorsField.GetValue(shaderInfo) as Array;
                     if (vectors != null)
                     {
                         foreach (var vec in vectors)
                         {
-                            string name = (string)vec.GetType().GetField("m_Name", BindingFlags.Public | BindingFlags.Instance).GetValue(vec);
-                            Vector4 value = (Vector4)vec.GetType().GetField("m_Value", BindingFlags.Public | BindingFlags.Instance).GetValue(vec);
-                            cap.eventDataFields[$"ShaderVector_{name}"] = value.ToString();
+                            if (vec == null) continue;
+                            FieldInfo nameField = vec.GetType().GetField("m_Name", flags);
+                            FieldInfo valueField = vec.GetType().GetField("m_Value", flags);
+                            if (nameField == null || valueField == null) continue;
+                            string name = nameField.GetValue(vec) as string;
+                            object rawValue = valueField.GetValue(vec);
+                            if (name == null || !(rawValue is Vector4)) continue;
+                            cap.eventDataFields[$"ShaderVector_{name}"] = GetValueString(rawValue);
                         }
                     }
                 }
-
-                if (texturesField != null)
+                catch (Exception e)
                 {
-                    Array textures = (Array)texturesField.GetValue(shaderInfo);
+                    Debug.LogWarning("[SYN FRAME EXPORTER] Failed to extract shader vectors: " + e.Message);
+                }
+            }
+
+            if (texturesField != null)
+            {
+                try
+                {
+                    Array textures = texturesField.GetValue(shaderInfo) as Array;
                     if (textures != null)
                     {
                         foreach (var tex in textures)
                         {
-                            string name = (string)tex.GetType().GetField("m_Name", BindingFlags.Public | BindingFlags.Instance).GetValue(tex);
-                            string texName = (string)tex.GetType().GetField("m_TextureName", BindingFlags.Public | BindingFlags.Instance).GetValue(tex);
-                            cap.eventDataFields[$"ShaderTexture_{name}"] = texName;
+                            if (tex == null) continue;
+                            FieldInfo nameField = tex.GetType().GetField("m_Name", flags);
+                            FieldInfo texNameField = tex.GetType().GetField("m_TextureName", flags);
+                            if (nameField == null || texNameField == null) continue;
+                            string name = nameField.GetValue(tex) as string;
+                            string texName = texNameField.GetValue(tex) as string;
+                            if (name == null) continue;
+                            cap.eventDataFields[$"ShaderTexture_{name}"] = texName ?? "";
                         }
                     }
                 }
-            }
-            catch (Exception e)
-            {
-                Debug.LogWarning("[SYN FRAME EXPORTER] Failed to extract shader info details: " + e.Message);
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[SYN FRAME EXPORTER] Failed to extract shader textures: " + e.Message);
+                }
             }
         }
 
@@ -1261,6 +1466,11 @@ namespace Synthos.SynSceneOptimizer
             if (val is Renderer r) return $"{r.name} ({r.GetType().Name})";
             if (val is Texture t) return $"{t.name} ({t.width}x{t.height})";
             if (val is GameObject go) return go.name;
+            if (val is Vector4 v4)
+            {
+                return string.Format(CultureInfo.InvariantCulture, "({0}, {1}, {2}, {3})", v4.x, v4.y, v4.z, v4.w);
+            }
+            if (val is IFormattable formattable) return formattable.ToString(null, CultureInfo.InvariantCulture);
             return val.ToString();
         }
 
@@ -1299,7 +1509,7 @@ namespace Synthos.SynSceneOptimizer
                     }
                     string detailsEsc = EscapeCSV(string.Join(" | ", details));
 
-                    sb.AppendLine($"{evt.index},{evt.level},{typeEsc},{nameEsc},{goPathEsc},{shaderEsc},{matEsc},{evt.vertexCount},{causeEsc},{passPathEsc},\"{detailsEsc}\"");
+                    sb.AppendLine($"{evt.index},{evt.level},{typeEsc},{nameEsc},{goPathEsc},{shaderEsc},{matEsc},{evt.vertexCount},{causeEsc},{passPathEsc},{detailsEsc}");
                 }
 
                 File.WriteAllText(path, sb.ToString(), Encoding.UTF8);
@@ -1309,6 +1519,7 @@ namespace Synthos.SynSceneOptimizer
             catch (Exception e)
             {
                 Debug.LogError($"[SYN FRAME EXPORTER] Failed to export CSV: {e.Message}");
+                EditorUtility.DisplayDialog("Export Failed", $"Failed to export CSV:\n{e.Message}", "OK");
             }
         }
 
@@ -1388,13 +1599,39 @@ namespace Synthos.SynSceneOptimizer
             catch (Exception e)
             {
                 Debug.LogError($"[SYN FRAME EXPORTER] Failed to export JSON: {e.Message}");
+                EditorUtility.DisplayDialog("Export Failed", $"Failed to export JSON:\n{e.Message}", "OK");
             }
         }
 
         private string EscapeJSON(string text)
         {
             if (string.IsNullOrEmpty(text)) return "";
-            return text.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\r", "\\r");
+
+            var sb = new StringBuilder(text.Length + 8);
+            foreach (char c in text)
+            {
+                switch (c)
+                {
+                    case '\\': sb.Append("\\\\"); break;
+                    case '"': sb.Append("\\\""); break;
+                    case '\b': sb.Append("\\b"); break;
+                    case '\f': sb.Append("\\f"); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    default:
+                        if (c < 0x20)
+                        {
+                            sb.Append("\\u").Append(((int)c).ToString("x4"));
+                        }
+                        else
+                        {
+                            sb.Append(c);
+                        }
+                        break;
+                }
+            }
+            return sb.ToString();
         }
 
         private void ExportTXT()
@@ -1416,7 +1653,7 @@ namespace Synthos.SynSceneOptimizer
 
                 foreach (var evt in capturedEvents)
                 {
-                    string indent = new string(' ', evt.level * 4);
+                    string indent = new string(' ', Mathf.Max(0, evt.level) * 4);
                     string shaderSuffix = string.IsNullOrEmpty(evt.shaderName) ? "" : $"  [Shader: {evt.shaderName}]";
                     string matSuffix = string.IsNullOrEmpty(evt.materialName) ? "" : $" [Mat: {evt.materialName}]";
                     string vertSuffix = evt.vertexCount > 0 ? $" [Verts: {evt.vertexCount:N0}]" : "";
@@ -1435,6 +1672,7 @@ namespace Synthos.SynSceneOptimizer
             catch (Exception e)
             {
                 Debug.LogError($"[SYN FRAME EXPORTER] Failed to export TXT: {e.Message}");
+                EditorUtility.DisplayDialog("Export Failed", $"Failed to export TXT:\n{e.Message}", "OK");
             }
         }
     }

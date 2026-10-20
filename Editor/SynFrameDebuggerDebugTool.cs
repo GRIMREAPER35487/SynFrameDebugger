@@ -21,10 +21,11 @@ namespace Synthos.SynSceneOptimizer
                     return;
                 }
 
-                var window = GetWindow(windowType, false, "Frame Debugger", false);
+                var existingWindows = Resources.FindObjectsOfTypeAll(windowType);
+                var window = existingWindows.Length > 0 ? existingWindows[0] : null;
                 if (window == null)
                 {
-                    Debug.LogError("FrameDebuggerWindow instance not found");
+                    Debug.LogError("FrameDebuggerWindow instance not found (open the Frame Debugger first)");
                     return;
                 }
 
@@ -65,6 +66,12 @@ namespace Synthos.SynSceneOptimizer
                 PropertyInfo isValueCreatedProp = lazyObj.GetType().GetProperty("IsValueCreated");
                 bool isValueCreated = (bool)isValueCreatedProp.GetValue(lazyObj);
                 Debug.Log($"[SYN DEBUG TOOL] m_CurEventData.IsValueCreated: {isValueCreated}");
+
+                if (!isValueCreated)
+                {
+                    Debug.Log("[SYN DEBUG TOOL] m_CurEventData.Value is not created yet");
+                    return;
+                }
 
                 PropertyInfo valueProp = lazyObj.GetType().GetProperty("Value");
                 object eventDataObj = valueProp.GetValue(lazyObj);

@@ -73,37 +73,65 @@ namespace Synthos.SynSceneOptimizer
             sb.AppendLine("=========================================================================");
 
             sb.AppendLine("--- FIELDS ---");
-            var fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-            foreach (var field in fields)
+            try
             {
-                sb.AppendLine($"  {(field.IsPublic ? "public" : "private")} {(field.IsStatic ? "static" : "")} {field.FieldType.FullName} {field.Name}");
+                var fields = type.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                foreach (var field in fields)
+                {
+                    sb.AppendLine($"  {(field.IsPublic ? "public" : "private")} {(field.IsStatic ? "static" : "")} {field.FieldType.FullName} {field.Name}");
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  failed to read members: {ex.Message}");
             }
 
             sb.AppendLine();
             sb.AppendLine("--- PROPERTIES ---");
-            var props = type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-            foreach (var prop in props)
+            try
             {
-                sb.AppendLine($"  {prop.PropertyType.FullName} {prop.Name} (Get: {prop.CanRead}, Set: {prop.CanWrite})");
+                var props = type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                foreach (var prop in props)
+                {
+                    sb.AppendLine($"  {prop.PropertyType.FullName} {prop.Name} (Get: {prop.CanRead}, Set: {prop.CanWrite})");
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  failed to read members: {ex.Message}");
             }
 
             sb.AppendLine();
             sb.AppendLine("--- METHODS ---");
-            var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
-            foreach (var method in methods)
+            try
             {
-                // Skip compiler generated property accessors to keep it clean
-                if (method.Name.StartsWith("get_") || method.Name.StartsWith("set_")) continue;
-
-                var parameters = method.GetParameters();
-                var paramList = new StringBuilder();
-                for (int i = 0; i < parameters.Length; i++)
+                var methods = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static);
+                foreach (var method in methods)
                 {
-                    paramList.Append($"{parameters[i].ParameterType.Name} {parameters[i].Name}");
-                    if (i < parameters.Length - 1) paramList.Append(", ");
-                }
+                    // Skip compiler generated property accessors to keep it clean
+                    if (method.Name.StartsWith("get_") || method.Name.StartsWith("set_")) continue;
 
-                sb.AppendLine($"  {(method.IsPublic ? "public" : "private")} {(method.IsStatic ? "static" : "")} {method.ReturnType.FullName} {method.Name}({paramList})");
+                    try
+                    {
+                        var parameters = method.GetParameters();
+                        var paramList = new StringBuilder();
+                        for (int i = 0; i < parameters.Length; i++)
+                        {
+                            paramList.Append($"{parameters[i].ParameterType.Name} {parameters[i].Name}");
+                            if (i < parameters.Length - 1) paramList.Append(", ");
+                        }
+
+                        sb.AppendLine($"  {(method.IsPublic ? "public" : "private")} {(method.IsStatic ? "static" : "")} {method.ReturnType.FullName} {method.Name}({paramList})");
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine($"  failed to read members: {method.Name}: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  failed to read members: {ex.Message}");
             }
 
             sb.AppendLine();
